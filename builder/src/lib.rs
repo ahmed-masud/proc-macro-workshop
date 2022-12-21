@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Ident};
+use syn::{parse_macro_input, DeriveInput, Ident, Error};
 
 fn is_option(ty: &syn::Type) -> bool {
     if let syn::Type::Path(syn::TypePath { path, .. }) = ty {
@@ -47,7 +47,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_fields_default = fields.iter().map(|field| {
         let name = &field.ident;
         quote! {
-            #name: None
+            #name: ::std::option::Option::None
         }
     });
 
@@ -63,7 +63,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             (0, false) => {
                 return quote! {
                     pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                        self.#name = Some(#name);
+                        self.#name = ::std::option::Option::Some(#name);
                         self
                     }
                 }
@@ -71,7 +71,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             (0, true) => {
                 return quote! {
                     pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                        self.#name = Some(Some(#name));
+                        self.#name = ::std::option::Option::Some(::std::option::Option::Some(#name));
                         self
                     }
                 }
@@ -86,23 +86,34 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 return quote!();
             }
             let mut nested = match attr {
-                syn::Meta::List(syn::MetaList { nested, .. }) => nested,
+                syn::Meta::List(syn::MetaList { ref nested, .. }) => nested.clone(),
                 _ => return quote!(),
             };
             if nested.len() != 1 {
-                panic!("expected exactly argument to builder each = \"name\"");
+                return Error::new_spanned(attr, "expected `builder(each = \"...\")`")
+                    .to_compile_error();
             }
-            let single_name = match nested.pop().unwrap().into_value() {
+            let value = nested.pop().unwrap().into_value();
+            let single_name = match value {
                 syn::NestedMeta::Meta(syn::Meta::NameValue(syn::MetaNameValue {
-                    lit: syn::Lit::Str(lit_str), ..
+                    lit: syn::Lit::Str(lit_str), path: syn::Path { segments, ..}, ..
                 })) => {
+                    if segments.len() != 1 {
+                        return Error::new_spanned(attr,
+                            "expected `builder(each = \"...\")`")
+                                .to_compile_error();
+                    }
+                    let each_ident = &segments[0].ident;
+                    if each_ident != "each" {
+                        return Error::new_spanned(attr, "expected `builder(each = \"...\")`").to_compile_error();
+                    }
                     let Ok(arg) = lit_str.parse::<Ident>()
                     else {
-                        panic!("{} is not a valid identifier", lit_str.value());
+                        return Error::new_spanned(attr, "expected `builder(each = \"...\")`").to_compile_error();
                     };
                     arg
                 },
-                _ => panic!("expected exactly argument to builder each = \"name\""),
+                _ => return Error::new_spanned(attr, "expected `builder(each = \"...\")`").to_compile_error(),
             };
             let inner_type = inner_type(ty);
             return quote! {
@@ -166,7 +177,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
             #(#builder_set_methods)*
 
-            pub fn build(&self) -> Result<#name, Box<dyn std::error::Error>> {
+            pub fn build(&self) -> ::std::result::Result<#name, ::std::boxed::Box<dyn ::std::error::Error>> {
                 Ok(#name {
                     #(#build_fields,)*
                 })
